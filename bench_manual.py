@@ -55,6 +55,7 @@ def benchmark_submodular_problem_class(algorithm, n_reps: int = 5, budget: int =
     count_fail = 0
     count_success = 0
     time_to_success = []
+    best_sol_found = []
 
     for k, v in kwargs.items():
         logger.add_experiment_attribute(k, str(v))
@@ -70,7 +71,9 @@ def benchmark_submodular_problem_class(algorithm, n_reps: int = 5, budget: int =
             if problem.state.optimum_found :
                 count_success += 1
                 time_to_success.append(problem.state.evaluations)
-            else : count_fail += 1
+            else : 
+                count_fail += 1
+                best_sol_found.append(problem.state.current_best.y)
 
 
             # plotting : does not work
@@ -121,6 +124,9 @@ def benchmark_submodular_problem_class(algorithm, n_reps: int = 5, budget: int =
     print("=" * 60)
     if count_success > 0 :
         print(f"Time to success :\n{time_to_success}")
+    print("=" * 60)
+    print(f"Best solution found when fail : {best_sol_found}")
+    
     
 
     
