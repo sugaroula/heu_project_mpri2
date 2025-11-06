@@ -126,8 +126,6 @@ def benchmark_submodular_problem_class(algorithm, n_reps: int = 5, budget: int =
         print(f"Time to success :\n{time_to_success}")
     print("=" * 60)
     print(f"Best solution found when fail : {best_sol_found}")
-    
-    
 
     
 """
@@ -340,3 +338,249 @@ if __name__ == "__main__":
     plot_mean_traces(traces2, f"MaxCut fid={fid} — CatherinotSotiriou")
 
 
+
+
+# =========================
+# Helper: generic bit-flip
+# =========================
+def bitflip(self_rng, x, p, force_one=True):
+    y = x.copy()
+    flips = self_rng.rand(len(x)) < p
+    if force_one and not flips.any():
+        flips[self_rng.randint(len(x))] = True
+    y[flips] = 1 - y[flips]
+    return y
+
+# =========================
+# More algorithms
+# =========================
+
+class RandomSearch:
+    def __init__(self, budget=3000, rng_seed=None):
+        self.budget = budget
+        self.rng = np.random.RandomState(rng_seed)
+    def __call__(self, problem):
+        trace = []
+        for _ in range(self.budget):
+            x = self.rng.randint(0,2,size=problem.meta_data.n_variables)
+            eval_and_record(problem, x, trace)
+            if problem.state.optimum_found:
+                break
+        return np.array(trace, dtype=float)
+
+class RLS:  # 1-bit randomized local search
+    def __init__(self, budget=3000, rng_seed=None):
+        self.budget = budget
+        self.rng = np.random.RandomState(rng_seed)
+    def __call__(self, problem):
+        trace = []
+        n = problem.meta_data.n_variables
+        x = self.rng.randint(0,2,size=n)
+        fx = eval_and_record(problem, x, trace)
+        while problem.state.evaluations < self.budget and not problem.state.optimum_found:
+            y = x.copy()
+            i = self.rng.randint(n)
+            y[i] = 1 - y[i]
+            fy = eval_and_record(problem, y, trace)
+            if fy >= fx:
+                x, fx = y, fy
+        return np.array(trace, dtype=float)
+
+class OnePlusOneEA_Simple:
+    def __init__(self, budget=3000, mutation_rate=None, rng_seed=None):
+        self.budget = budget; self.mr = mutation_rate
+        self.rng = np.random.RandomState(rng_seed)
+    def __call__(self, problem):
+        trace = []
+        n = problem.meta_data.n_variables
+        p = self.mr if self.mr is not None else (1/max(n,1))
+        x = self.rng.randint(0,2,size=n)
+        fx = eval_and_record(problem, x, trace)
+        while problem.state.evaluations < self.budget and not problem.state.optimum_found:
+            y = bitflip(self.rng, x, p)
+            fy = eval_and_record(problem, y, trace)
+            if fy >= fx: x, fx = y, fy
+        return np.array(trace, dtype=float)
+
+class OnePlusLambdaEA:
+    """(1+λ) EA: from the parent, sample λ offspring; accept the best if ≥."""
+    def __init__(self, budget=3000, mutation_rate=None, lam=4, rng_seed=None):
+        self.budget = budget; self.mr = mutation_rate; self.lam = int(max(1,lam))
+        self.rng = np.random.RandomState(rng_seed)
+    def __call__(self, problem):
+        trace = []
+        n = problem.meta_data.n_variables
+        p = self.mr if self.mr is not None else (1/max(n,1))
+        x = self.rng.randint(0,2,size=n)
+        fx = eval_and_record(problem, x, trace)
+        while problem.state.evaluations < self.budget and not problem.state.optimum_found:
+            best_y = None; best_f = -np.inf
+            for _ in range(self.lam):
+                y = bitflip(self.rng, x, p)
+                fy = eval_and_record(problem, y, trace)
+                if fy > best_f: best_f, best_y = fy, y
+                if problem.state.optimum_found: break
+            if best_f >= fx:
+                x, fx = best_y, best_f
+        return np.array(trace, dtype=float)
+
+class MuPlusOneEA:
+    """(μ+1) EA: keep μ individuals, mutate the current best; replace worst if child ≥ worst."""
+    def __init__(self, budget=3000, mutation_rate=None, mu=5, rng_seed=None):
+        self.budget = budget; self.mr = mutation_rate; self.mu = int(max(1,mu))
+        self.rng = np.random.RandomState(rng_seed)
+    def __call__(self, problem):
+        trace = []
+        n = problem.meta_data.n_variables
+        p = self.mr if self.mr is not None else (1/max(n,1))
+        pop = [self.rng.randint(0,2,size=n) for _ in range(self.mu)]
+        fits = [eval_and_record(problem, ind, trace) for ind in pop]
+        while problem.state.evaluations < self.budget and not problem.state.optimum_found:
+            best_idx = int(np.argmax(fits))
+            parent = pop[best_idx]
+            child = bitflip(self.rng, parent, p)
+            fchild = eval_and_record(problem, child, trace)
+            worst_idx = int(np.argmin(fits))
+            if fchild >= fits[worst_idx]:
+                pop[worst_idx] = child; fits[worst_idx] = fchild
+        return np.array(trace, dtype=float)
+
+# You already have CatherinotSotiriou defined above — we’ll reuse it as another algorithm option.
+
+
+# ============================================
+# Problem suite and benchmarking infrastructure
+# ============================================
+def get_pbo_problem(fid, dim=100, instance=1):
+    return ioh.get_problem(fid, instance=instance, dimension=dim, problem_class=ioh.ProblemClass.PBO)
+
+def get_graph_maxcut():
+    maxcut_fids = [k for k,v in ioh.ProblemClass.GRAPH.problems.items() if "MaxCut" in v]
+    if not maxcut_fids:
+        return None, None
+    fid = maxcut_fids[0]
+    return ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH), fid
+
+def run_n_reps(problem, algo_cls, n_reps=5, **kwargs):
+    traces = []
+    successes = 0
+    t2s = []
+    finals = []
+    for _ in range(n_reps):
+        problem.reset()
+        algo = algo_cls(**kwargs)
+        tr = algo(problem)
+        traces.append(tr)
+        finals.append(problem.state.current_best.y)
+        if problem.state.optimum_found:
+            successes += 1
+            t2s.append(problem.state.evaluations)
+    return dict(traces=traces, successes=successes, times=t2s, finals=finals)
+
+def plot_compare_algorithms(problem_name, algo_results, title_suffix=""):
+    """algo_results: dict[name] -> list of traces"""
+    plt.figure(figsize=(10,6))
+    max_x = 0
+    mean_curves = {}
+    for name, traces in algo_results.items():
+        if not traces: continue
+        xmax = int(max(t[-1,0] for t in traces if t.size))
+        max_x = max(max_x, xmax)
+    grid = np.linspace(1, max_x, 200).astype(int)
+    for name, traces in algo_results.items():
+        interps = []
+        for t in traces:
+            xs, ys = t[:,0], t[:,1]
+            interps.append(np.interp(grid, xs, ys, left=ys[0], right=ys[-1]))
+        mean = np.mean(np.vstack(interps), axis=0)
+        mean_curves[name] = mean
+        plt.plot(grid, mean, lw=2, label=name)
+    plt.xlabel("Evaluations"); plt.ylabel("Best-so-far")
+    plt.title(f"{problem_name} — mean curves {title_suffix}")
+    plt.grid(True); plt.legend(); plt.show()
+    return mean_curves
+
+# optional: save a small CSV (no pandas)
+import csv
+def save_summary_csv(path, summary_rows, header=("problem","algorithm","successes","reps","mean_final","mean_t2s")):
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        for r in summary_rows: w.writerow(r)
+
+# ======================
+# Example master routine
+# ======================
+def big_benchmark():
+    # --- choose problems ---
+    problems = []
+    problems.append(("OneMax (fid=1, d=100)", get_pbo_problem(1, dim=100)))
+    problems.append(("LeadingOnes (fid=2, d=100)", get_pbo_problem(2, dim=100)))
+    problems.append(("LABS (fid=18, d=60)", get_pbo_problem(18, dim=60)))
+    problems.append(("IsingRing (fid=19, d=100)", get_pbo_problem(19, dim=100)))
+    gprob, gfid = get_graph_maxcut()
+    if gprob is not None:
+        problems.append((f"MaxCut (GRAPH fid={gfid})", gprob))
+
+    # --- choose algorithms & params ---
+    ALGOS = {
+        "(1+1)EA 1/n": lambda budget: OnePlusOneEA_Simple(budget=budget, mutation_rate=None),
+        "RLS (1-bit)": lambda budget: RLS(budget=budget),
+        "(1+λ)EA λ=4": lambda budget: OnePlusLambdaEA(budget=budget, lam=4),
+        "(μ+1)EA μ=5": lambda budget: MuPlusOneEA(budget=budget, mu=5),
+        "RandomSearch": lambda budget: RandomSearch(budget=budget),
+        "OurAlgo":       lambda budget: CatherinotSotiriou(budget=budget, bias_rate=0.8, restart_rate=0.02, restart_mean=200, restart_std=80),
+    }
+
+    BUDGET = 10000
+    N_REPS = 5
+    summary = []
+
+    for pname, prob in problems:
+        print(f"\n=== {pname} ===")
+        # run all algos
+        per_algo_traces = {}
+        for aname, factory in ALGOS.items():
+            result = run_n_reps(prob, algo_cls=lambda **kw: factory(BUDGET), n_reps=N_REPS)
+            per_algo_traces[aname] = result["traces"]
+            s = result["successes"]; reps = N_REPS
+            mean_final = float(np.mean(result["finals"])) if result["finals"] else float("nan")
+            mean_t2s = float(np.mean(result["times"])) if result["times"] else float("nan")
+            print(f"{aname:15s}  success {s}/{reps}  mean final={mean_final:.3f}  mean t2s={mean_t2s}")
+            summary.append([pname, aname, s, reps, f"{mean_final:.3f}", f"{mean_t2s}"])
+        # plot comparison for this problem
+        plot_compare_algorithms(pname, per_algo_traces)
+
+    save_summary_csv("summary.csv", summary)
+    print("\nSaved summary.csv (no pandas).")
+
+# =====================
+# Parameter sweep demo
+# =====================
+def lambda_sweep_on_onemax():
+    prob = get_pbo_problem(1, dim=100)
+    BUDGET = 8000
+    N_REPS = 3
+    lam_values = [1, 2, 4, 8, 16]
+
+    per_lam = {}
+    for lam in lam_values:
+        result = run_n_reps(
+            prob,
+            algo_cls=lambda **kw: OnePlusLambdaEA(budget=BUDGET, lam=lam),
+            n_reps=N_REPS
+        )
+        per_lam[f"(1+λ)EA λ={lam}"] = result["traces"]
+        mean_final = float(np.mean(result["finals"])) if result["finals"] else float("nan")
+        print(f"λ={lam}: mean final={mean_final:.3f}, success {result['successes']}/{N_REPS}")
+    plot_compare_algorithms("OneMax (d=100)", per_lam, title_suffix="— λ sweep")
+
+# -------------
+# Run examples
+# -------------
+if __name__ == "__main__":
+    # 1) big suite benchmark (all algos × many problems)
+    big_benchmark()
+
+    # 2) optional: a parameter sweep figure for your report
+    lambda_sweep_on_onemax()
