@@ -8,6 +8,32 @@ import matplotlib.pyplot as plt
 #import os
 
 
+def list_graph_problems():
+    """Print all GRAPH problems (fid -> name)."""
+    gp = ioh.ProblemClass.GRAPH.problems  # dict: fid -> name
+    print(f"GRAPH problems available: {len(gp)}")
+    for fid, name in sorted(gp.items()):
+        print(f"{fid:4d}  {name}")
+
+
+def find_fids_by_keywords(*keywords, limit_per_kw=1):
+    """
+    Return a dict {kw: [fid,...]} where fid names contain kw (case-insensitive).
+    limit_per_kw limits how many fids we pick for each keyword.
+    """
+    gp = ioh.ProblemClass.GRAPH.problems
+    out = {}
+    for kw in keywords:
+        kw_l = kw.lower()
+        fids = [fid for fid, name in gp.items() if kw_l in name.lower()]
+        out[kw] = fids[:limit_per_kw]
+    return out
+
+
+def get_graph_problem(fid, instance=1):
+    return ioh.get_problem(fid, instance=instance, problem_class=ioh.ProblemClass.GRAPH)
+
+
 
 def run_reps(problem, algo_cls, n_reps=3, **kwargs):
     traces = []
@@ -164,8 +190,6 @@ def benchmark_submodular_problem_class(algorithm, n_reps: int = 5, budget: int =
 
 
 
-
-
 def benchmark_compare_BinaryEA_PBO_pb(algorithm, n_reps: int = 5, budget: int = 50000, problems_info=[(1, "OneMax"), (2, "LeadingOnes"), (18, "LABS"), (19, "IsingRing")], **kwargs):
     for fid, name in problems_info:
         problem = ioh.get_problem(fid, instance=1, dimension=10, problem_class=ioh.ProblemClass.INTEGER)
@@ -200,7 +224,64 @@ class OnePlusOneEA:
         return np.array(trace, dtype=float)
 
 
+class CatSo_only_restart:
 
+    def __init__(self, budget: int = 50_000, mutation_rate: float = 0.1, restart_rate: float = 0.002,  budget_restart: int = 500, **kwargs): # mutation rate, random restart rate, random restart budget rate
+        self.budget = budget
+        self.mutation_rate = mutation_rate
+        self.restart_rate = restart_rate
+        self.budget_restart = budget_restart
+
+    def __call__(self, problem: ioh.problem.IntegerSingleObjective) -> None:
+
+        trace = []  # <-- collect (evals, best_y) so the runner can plot
+
+        n = problem.meta_data.n_variables
+        p = self.mutation_rate if self.mutation_rate is not None else (1 / max(n, 1))
+
+        # Initialize with random sample
+        x = np.random.randint(0, 2, size=n)
+        result = eval_and_record(problem, x, trace)
+
+        # Main loop
+        while problem.state.evaluations < self.budget and not problem.state.optimum_found:
+            
+            # Potential restart
+            if np.random.random() < self.restart_rate:
+                
+                budget_restart = self.budget_restart
+                candidate_restart = np.random.randint(0, 2, size=n)
+                result_restart = eval_and_record(problem, candidate_restart, trace)
+
+                while budget_restart > 0 and problem.state.evaluations < self.budget and not problem.state.optimum_found: # We do have to stay in budget
+                    
+                    budget_restart -= 1
+
+                    # IMPORTANT: copy, then flip; and use the right length
+                    new_candidate_restart = candidate_restart.copy()
+
+                    for i in range(len(candidate)):
+                        if np.random.random() < p:
+                            new_candidate_restart[i] = 1 - new_candidate_restart[i]  # Flip bit (0->1, 1->0)
+                    
+                    new_result_restart = eval_and_record(problem, new_candidate_restart, trace)
+
+                    if new_result_restart >= result_restart:
+                        candidate_restart = new_candidate_restart
+                        result_restart = new_result_restart
+            # Restart finished
+
+            else : # no restart
+                # Mutation operator : each bit is flipped with proba "mutation_rate"
+                candidate = problem.state.current_best.x.copy()
+
+                for i in range(len(candidate)):
+                    if np.random.random() < p:
+                        candidate[i] = 1 - candidate[i]  # Flip bit (0->1, 1->0)
+
+                _ = eval_and_record(problem, candidate, trace)
+        return np.array(trace, dtype=float)  # <-- so run_reps/plot_* work
+    
 
 class CatherinotSotiriou:
     """
@@ -285,7 +366,7 @@ class CatherinotSotiriou:
 
             # decide: restart or normal step
             if self.rng.rand() < self.restart_rate:
-                # --- restart branch (second page of your notes) ---
+                # --- restart branch 
                 r_cand, r_fit = self._restart_run(problem, p, trace)
                 # insert restart result into (s1, s2) if good enough
                 if r_fit >= f1:
@@ -323,7 +404,7 @@ class CatherinotSotiriou:
 
 
 benchmark_submodular_problem_class(CatherinotSotiriou)
-
+'''
 if __name__ == "__main__":
     # PBO sanity — OneMax
     prob1 = ioh.get_problem(1, instance=1, dimension=100, problem_class=ioh.ProblemClass.PBO)
@@ -336,7 +417,7 @@ if __name__ == "__main__":
     prob2 = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
     traces2 = run_reps(prob2, CatherinotSotiriou, n_reps=3, budget=8000, bias_rate=0.8, restart_rate=0.02, restart_mean=200, restart_std=80)
     plot_mean_traces(traces2, f"MaxCut fid={fid} — CatherinotSotiriou")
-
+'''
 
 
 
@@ -445,7 +526,6 @@ class MuPlusOneEA:
                 pop[worst_idx] = child; fits[worst_idx] = fchild
         return np.array(trace, dtype=float)
 
-# You already have CatherinotSotiriou defined above — we’ll reuse it as another algorithm option.
 
 
 # ============================================
@@ -500,7 +580,7 @@ def plot_compare_algorithms(problem_name, algo_results, title_suffix=""):
     plt.grid(True); plt.legend(); plt.show()
     return mean_curves
 
-# optional: save a small CSV (no pandas)
+# optional: save a small CSV 
 import csv
 def save_summary_csv(path, summary_rows, header=("problem","algorithm","successes","reps","mean_final","mean_t2s")):
     with open(path, "w", newline="") as f:
@@ -554,6 +634,48 @@ def big_benchmark():
     save_summary_csv("summary.csv", summary)
     print("\nSaved summary.csv (no pandas).")
 
+
+# SANITY CHECK FOR GRAPHS
+
+def quick_graph_sanity():
+    # 1) choose fids (1 per keyword)
+    picks = find_fids_by_keywords("MaxCut", "MaxCoverage", "MaxInfluence", "PackWhile", limit_per_kw=1)
+
+    # 2) small budgets for fast sanity runs
+    BUDGET = 6000
+    N_REPS  = 3
+
+    # 3) iterate what we found (skip empty)
+    for kw, fid_list in picks.items():
+        if not fid_list:
+            print(f"[skip] No fid matched '{kw}' in this IOH build.")
+            continue
+
+        fid = fid_list[0]
+        problem = get_graph_problem(fid, instance=1)
+        print(f"\nRunning {kw}: fid={fid}, name={problem.meta_data.name}")
+
+        # (a) baseline
+        tr_base = run_reps(problem, OnePlusOneEA_Simple,
+                           n_reps=N_REPS, budget=BUDGET, mutation_rate=None)  # 1/n
+        plot_mean_traces(tr_base, f"{kw} (fid={fid}) — (1+1)EA 1/n")
+
+        # (b) your algorithm
+        problem.reset()
+        tr_ours = run_reps(problem, CatherinotSotiriou,
+                           n_reps=N_REPS, budget=BUDGET,
+                           mut_rate=None,            # 1/n
+                           bias_rate=0.8,
+                           restart_rate=0.02,
+                           restart_mean=200,
+                           restart_std=80)
+        plot_mean_traces(tr_ours, f"{kw} (fid={fid}) — Our algorithm")
+
+if __name__ == "__main__":
+    list_graph_problems()       # first time: see names
+    quick_graph_sanity()        # then: quick tests + plots
+
+
 # =====================
 # Parameter sweep demo
 # =====================
@@ -578,9 +700,11 @@ def lambda_sweep_on_onemax():
 # -------------
 # Run examples
 # -------------
+'''
 if __name__ == "__main__":
     # 1) big suite benchmark (all algos × many problems)
     big_benchmark()
 
-    # 2) optional: a parameter sweep figure for your report
+    # 2) a parameter sweep figure 
     lambda_sweep_on_onemax()
+'''
