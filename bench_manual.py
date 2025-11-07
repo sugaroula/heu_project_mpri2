@@ -260,7 +260,7 @@ class CatSo_only_restart:
                     # IMPORTANT: copy, then flip; and use the right length
                     new_candidate_restart = candidate_restart.copy()
 
-                    for i in range(len(candidate)):
+                    for i in range(n):
                         if np.random.random() < p:
                             new_candidate_restart[i] = 1 - new_candidate_restart[i]  # Flip bit (0->1, 1->0)
                     
@@ -275,7 +275,7 @@ class CatSo_only_restart:
                 # Mutation operator : each bit is flipped with proba "mutation_rate"
                 candidate = problem.state.current_best.x.copy()
 
-                for i in range(len(candidate)):
+                for i in range(n):
                     if np.random.random() < p:
                         candidate[i] = 1 - candidate[i]  # Flip bit (0->1, 1->0)
 
@@ -400,11 +400,9 @@ class CatherinotSotiriou:
 
 
         
-
-
-
-benchmark_submodular_problem_class(CatherinotSotiriou)
 '''
+benchmark_submodular_problem_class(CatherinotSotiriou)
+
 if __name__ == "__main__":
     # PBO sanity — OneMax
     prob1 = ioh.get_problem(1, instance=1, dimension=100, problem_class=ioh.ProblemClass.PBO)
@@ -580,6 +578,150 @@ def plot_compare_algorithms(problem_name, algo_results, title_suffix=""):
     plt.grid(True); plt.legend(); plt.show()
     return mean_curves
 
+def make_rate_grid(budget):
+    return [10.0/budget, 1.0/budget, 1.0/(10.0*budget)]
+
+def make_restart_budget_grid(budget):
+    return [int(max(1, budget/1000)), int(max(1, budget/100)), int(max(1, budget/10))]
+
+def run_param_grid_for_keyword(keyword, instance=1, budget=10000, n_reps=3):
+    """Run CatSo_only_restart on ONE fid matched by `keyword` for all 9 param combos.
+       Returns dict {(rate, b_restart): traces}.
+    """
+    picks = find_fids_by_keywords(keyword, limit_per_kw=1)
+    if not picks.get(keyword):
+        print(f"[skip] No fid matched '{keyword}'.")
+        return None, None
+
+    fid = picks[keyword][0]
+    problem = get_graph_problem(fid, instance=instance)
+
+    rates = make_rate_grid(budget)
+    brestarts = make_restart_budget_grid(budget)
+
+    results = {}   # (rate, b_restart) -> list of traces
+    summary_rows = []  # for CSV
+
+    for r in rates:
+        for br in brestarts:
+            problem.reset()
+            traces = run_reps(
+                problem, CatSo_only_restart,
+                n_reps=n_reps, budget=budget,
+                mutation_rate=None,        # 1/n default
+                restart_rate=r,
+                budget_restart=br
+            )
+            results[(r, br)] = traces
+
+            finals = []
+            succ = 0
+            t2s = []
+            for _ in range(n_reps):
+                # state after last rep:
+                finals.append(problem.state.current_best.y)
+                if problem.state.optimum_found:
+                    succ += 1
+                    t2s.append(problem.state.evaluations)
+            mean_final = float(np.mean(finals)) if finals else float("nan")
+            mean_t2s = float(np.mean(t2s)) if t2s else float("nan")
+
+            summary_rows.append([keyword, fid, instance, budget, r, br, succ, n_reps, f"{mean_final:.3f}", f"{mean_t2s}"])
+
+    return (keyword, fid, problem.meta_data.name), results, summary_rows
+
+def plot_grid_per_rate(keyword, fid, prob_name, results):
+    """Make 3 figures (one per restart_rate), each with 3 curves (budget_restart values)."""
+    # collect unique sorted rates and brs
+    rates = sorted({k[0] for k in results.keys()})
+    for r in rates:
+        # unify grid across all three curves at this r
+        plt.figure(figsize=(10,6))
+        max_x = 0
+        traces_by_br = {}
+        for (rr, br), tr_list in results.items():
+            if rr != r: continue
+            traces_by_br[br] = tr_list
+            xmax = int(max(t[-1,0] for t in tr_list if t.size))
+            max_x = max(max_x, xmax)
+        grid = np.linspace(1, max_x, 200).astype(int)
+        for br, tr_list in sorted(traces_by_br.items()):
+            interps = []
+            for t in tr_list:
+                xs, ys = t[:,0], t[:,1]
+                interps.append(np.interp(grid, xs, ys, left=ys[0], right=ys[-1]))
+            mean = np.mean(np.vstack(interps), axis=0)
+            plt.plot(grid, mean, lw=2, label=f"budget_restart={br}")
+        title = f"{prob_name} (fid={fid}) — restart_rate={r}  [budget={int(max_x)}]"
+        plt.xlabel("Evaluations"); plt.ylabel("Best-so-far")
+        plt.title(title)
+        plt.grid(True); plt.legend(); plt.show()
+
+def run_all_keywords_grid(budget=10000, n_reps=3, instance=1, csv_path="grid_summary.csv"):
+    keywords = ["MaxCut", "MaxCoverage", "MaxInfluence", "PackWhile"]
+    all_rows = []
+    for kw in keywords:
+        info = run_param_grid_for_keyword(kw, instance=instance, budget=budget, n_reps=n_reps)
+        if info is None:
+            continue
+        (keyword, fid, name), results, rows = info
+        print(f"\n=== {keyword}: fid={fid} name={name} ===")
+        plot_grid_per_rate(keyword, fid, name, results)
+        all_rows.extend(rows)
+    if all_rows:
+        save_summary_csv(csv_path, all_rows,
+                         header=("keyword","fid","instance","budget","restart_rate","budget_restart","successes","reps","mean_final","mean_t2s"))
+        print(f"\nSaved {csv_path}")
+
+
+def run_all_graph_instances_with_plots(budget=10_000, n_reps=3,
+                                       filter_substrings=None,   # e.g. ["MaxCut","MaxCoverage"]
+                                       max_plots=None):          # limit how many fids to plot
+    """
+    For every GRAPH fid (optionally filtered), run the 3×3 grid with CatSo_only_restart
+    and produce 3 figures per fid (one per restart_rate, 3 lines = budget_restart values).
+    """
+    shown = 0
+    for fid, name in sorted(ioh.ProblemClass.GRAPH.problems.items()):
+        if filter_substrings:
+            low = name.lower()
+            if not any(s.lower() in low for s in filter_substrings):
+                continue
+
+        try:
+            problem = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
+        except Exception as e:
+            print(f"[skip] fid={fid} {name}: {e}")
+            continue
+
+        # build the same 3×3 grid you already use elsewhere
+        rates     = make_rate_grid(budget)             # [10/budget, 1/budget, 1/(10*budget)]
+        brestarts = make_restart_budget_grid(budget)   # [budget/1000, budget/100, budget/10]
+        results = {}                                   # {(rate, br): [trace,...]}
+
+        for r in rates:
+            for br in brestarts:
+                problem.reset()
+                traces = run_reps(
+                    problem, CatSo_only_restart,
+                    n_reps=n_reps, budget=budget,
+                    mutation_rate=None,         # 1/n default
+                    restart_rate=r,
+                    budget_restart=br
+                )
+                results[(r, br)] = traces
+
+        print(f"\n=== {name} (fid={fid}) — running grid, budget={budget}, reps={n_reps} ===")
+        # your existing plotter signature: (keyword, fid, prob_name, results)
+        plot_grid_per_rate("ALL", fid, name, results)
+
+        shown += 1
+        if max_plots is not None and shown >= max_plots:
+            print(f"(stopping after {shown} fids due to max_plots)")
+            break
+
+
+
 # optional: save a small CSV 
 import csv
 def save_summary_csv(path, summary_rows, header=("problem","algorithm","successes","reps","mean_final","mean_t2s")):
@@ -634,18 +776,111 @@ def big_benchmark():
     save_summary_csv("summary.csv", summary)
     print("\nSaved summary.csv (no pandas).")
 
+def benchmark_all_graph_items(budget=10_000, n_reps=3,
+                              restart_rate=0.01, budget_restart=200,
+                              csv_path=None, limit=None):
+    """
+    Iterate over all GRAPH problems (fid -> name) and run CatSo_only_restart
+    with the given restart_rate and budget_restart. Prints a short summary per fid.
+    Optionally writes a CSV.
+    """
+    rows = []
+    seen = 0
+    for fid, name in ioh.ProblemClass.GRAPH.problems.items():
+        if limit is not None and seen >= limit:
+            break
+        seen += 1
+
+        try:
+            problem = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
+        except Exception as e:
+            print(f"[skip] fid={fid} could not be loaded: {e}")
+            continue
+
+        res = run_n_reps(
+            problem,
+            algo_cls=CatSo_only_restart,
+            n_reps=n_reps,
+            budget=budget,
+            mutation_rate=None,          # default 1/n
+            restart_rate=restart_rate,   
+            budget_restart=int(max(1, budget_restart))  
+        )
+
+        succ = res["successes"]
+        mean_final = float(np.mean(res["finals"])) if res["finals"] else float("nan")
+        mean_t2s   = float(np.mean(res["times"]))  if res["times"]  else float("nan")
+
+        print(f"[fid {fid:4d}] {name:20s}  success {succ}/{n_reps}  "
+              f"mean_final={mean_final:.3f}  mean_t2s={mean_t2s}")
+
+        rows.append([name, fid, budget, restart_rate, budget_restart,
+                     succ, n_reps, f"{mean_final:.3f}", f"{mean_t2s}"])
+
+    if csv_path and rows:
+        save_summary_csv(csv_path, rows,
+            header=("problem_name","fid","budget","restart_rate","budget_restart",
+                    "successes","reps","mean_final","mean_t2s"))
+        print(f"\nSaved {csv_path}")
+
+def benchmark_all_graph_items_grid(budget=10_000, n_reps=3, csv_path="graph_all_grid.csv", limit=None):
+    rates = [10.0/budget, 1.0/budget, 1.0/(10.0*budget)]
+    brests = [int(max(1, budget/1000)), int(max(1, budget/100)), int(max(1, budget/10))]
+
+    rows = []
+    seen = 0
+    for fid, name in ioh.ProblemClass.GRAPH.problems.items():
+        if limit is not None and seen >= limit:
+            break
+        seen += 1
+        try:
+            problem = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
+        except Exception as e:
+            print(f"[skip] fid={fid} could not be loaded: {e}")
+            continue
+
+        print(f"\n=== {name} (fid={fid}) — budget={budget}, reps={n_reps} ===")
+        for r in rates:
+            for br in brests:
+                res = run_n_reps(
+                    problem,
+                    algo_cls=CatSo_only_restart,
+                    n_reps=n_reps,
+                    budget=budget,
+                    mutation_rate=None,    # 1/n
+                    restart_rate=r,        # <-- restart rate set here per combo
+                    budget_restart=br      # <-- restart budget set here per combo
+                )
+                succ = res["successes"]
+                mean_final = float(np.mean(res["finals"])) if res["finals"] else float("nan")
+                mean_t2s   = float(np.mean(res["times"]))  if res["times"]  else float("nan")
+
+                print(f"  r={r:.5f}  br={br:4d}  success {succ}/{n_reps}  "
+                      f"mean_final={mean_final:.3f}  mean_t2s={mean_t2s}")
+
+                rows.append([name, fid, budget, r, br, succ, n_reps, f"{mean_final:.3f}", f"{mean_t2s}"])
+
+                problem.reset()
+
+    if csv_path and rows:
+        save_summary_csv(csv_path, rows,
+            header=("problem_name","fid","budget","restart_rate","budget_restart",
+                    "successes","reps","mean_final","mean_t2s"))
+        print(f"\nSaved {csv_path}")
+
 
 # SANITY CHECK FOR GRAPHS
 
 def quick_graph_sanity():
-    # 1) choose fids (1 per keyword)
     picks = find_fids_by_keywords("MaxCut", "MaxCoverage", "MaxInfluence", "PackWhile", limit_per_kw=1)
 
-    # 2) small budgets for fast sanity runs
     BUDGET = 6000
     N_REPS  = 3
 
-    # 3) iterate what we found (skip empty)
+    # choose a demo setting for our restart-only algo
+    restart_rate = 0.02
+    budget_restart = 200   # evaluations spent inside each restart run
+
     for kw, fid_list in picks.items():
         if not fid_list:
             print(f"[skip] No fid matched '{kw}' in this IOH build.")
@@ -655,26 +890,30 @@ def quick_graph_sanity():
         problem = get_graph_problem(fid, instance=1)
         print(f"\nRunning {kw}: fid={fid}, name={problem.meta_data.name}")
 
-        # (a) baseline
+        # baseline (1+1)EA 1/n
         tr_base = run_reps(problem, OnePlusOneEA_Simple,
-                           n_reps=N_REPS, budget=BUDGET, mutation_rate=None)  # 1/n
+                           n_reps=N_REPS, budget=BUDGET, mutation_rate=None)  # 1/n default
         plot_mean_traces(tr_base, f"{kw} (fid={fid}) — (1+1)EA 1/n")
 
-        # (b) your algorithm
+        # our restart-only algorithm
         problem.reset()
-        tr_ours = run_reps(problem, CatherinotSotiriou,
-                           n_reps=N_REPS, budget=BUDGET,
-                           mut_rate=None,            # 1/n
-                           bias_rate=0.8,
-                           restart_rate=0.02,
-                           restart_mean=200,
-                           restart_std=80)
-        plot_mean_traces(tr_ours, f"{kw} (fid={fid}) — Our algorithm")
+        tr_ours = run_reps(
+            problem, CatSo_only_restart,
+            n_reps=N_REPS, budget=BUDGET,
+            mutation_rate=None,          # 1/n default inside runner
+            restart_rate=restart_rate,
+            budget_restart=budget_restart
+        )
+        plot_mean_traces(
+            tr_ours,
+            f"{kw} (fid={fid}) — Our algo\nrestart_rate={restart_rate}, budget_restart={budget_restart}"
+        )
 
+'''
 if __name__ == "__main__":
     list_graph_problems()       # first time: see names
     quick_graph_sanity()        # then: quick tests + plots
-
+'''
 
 # =====================
 # Parameter sweep demo
@@ -700,11 +939,35 @@ def lambda_sweep_on_onemax():
 # -------------
 # Run examples
 # -------------
-'''
-if __name__ == "__main__":
-    # 1) big suite benchmark (all algos × many problems)
-    big_benchmark()
 
-    # 2) a parameter sweep figure 
-    lambda_sweep_on_onemax()
-'''
+if __name__ == "__main__":
+    # 1) sanity check names once (comment out later)
+    # list_graph_problems()
+
+    # 2) quick sanity on a couple problems (small plots)
+    # quick_graph_sanity()
+
+    # 3) full 3×3 grid per problem type (plots + CSV)
+    #run_all_keywords_grid(budget=100, n_reps=3, instance=1, csv_path="grid_summary.csv")
+
+    # 4) run all problem instances
+    BUDGET = 1000
+    RR     = 10.0 / BUDGET       # ← restart_rate (pick one of the three)
+    BR     = int(BUDGET / 100)   # ← budget_restart (pick one of the three)
+
+    '''benchmark_all_graph_items(
+        budget=BUDGET,
+        n_reps=2,
+        restart_rate=RR,
+        budget_restart=BR,
+        csv_path="graph_all_single.csv",  # or None to skip csv
+        limit=None                        # e.g. 5 while testing
+    )'''
+
+    # 5) plot all problem instances 
+    run_all_graph_instances_with_plots(
+        budget=10_000, n_reps=3,
+        filter_substrings=["MaxCut","MaxCoverage","MaxInfluence","PackWhile"],
+        max_plots=None
+    )
+
