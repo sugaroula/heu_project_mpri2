@@ -78,18 +78,20 @@ class CatSo_var_budget_restart:
     def __call__(self, problem: ioh.problem.IntegerSingleObjective) -> None:
 
         # Initialize with random sample
-        x = np.random.randint(0, 2, size=problem.meta_data.n_variables)
-        problem(x)
+        candidate = np.random.randint(0, 2, size=problem.meta_data.n_variables)
+        problem(candidate)
 
         self.mutation_rate = 1/problem.meta_data.n_variables
 
         # For stats :
+        """
         count_restart = 0
         count_useful_restart = 0
+        """
 
         # For debugging purposes
         # TO COMMENT
-        print(f"CatSo called w budget {self.budget}, mut {self.mutation_rate}, restart rate {self.restart_rate}, budget_restart N({self.mean_budget_restart},{self.var_budget_restart})\n")
+        # print(f"CatSo called w budget {self.budget}, mut {self.mutation_rate}, restart rate {self.restart_rate}, budget_restart N({self.mean_budget_restart},{self.var_budget_restart})\n")
 
         # Main loop
         while problem.state.evaluations < self.budget and not problem.state.optimum_found:
@@ -120,9 +122,11 @@ class CatSo_var_budget_restart:
                         result_restart = new_result_restart
                 
                 # for stats :
+                """
                 count_restart +=1
                 if result_restart == (problem.state.current_best.y): 
                     count_useful_restart += 1
+                """
             # Restart finished
 
             else : # no restart
@@ -135,10 +139,11 @@ class CatSo_var_budget_restart:
 
                 problem(candidate)
 
-        
+        """
         print(f"ratio restarts : {count_restart} / {self.budget} = {count_restart / self.budget}")
         if count_restart > 0 :
             print(f"ratio useful restarts : {count_useful_restart} / {count_restart} = {count_useful_restart / count_restart}")
+        """
 
 """
 OneMax = ioh.get_problem(1, instance=1, dimension=300, problem_class=ioh.ProblemClass.PBO)
@@ -155,9 +160,12 @@ def test_CatSo_var_MaxCut_instances():
 
     for fid in fids:
             problem = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
+            """
             print("=" * 20)
             print(f"{problem.meta_data.name}")
+            """
             CatSo_var_budget_restart(restart_rate=25/50000, mean_budget_restart=200, var_budget_restart=5)(problem)
+            """
             print(f"Have we stayed in budget ? eval = {problem.state.evaluations} < 50 000 ?")
             print(f"Best found = {problem.state.current_best.y}")
             print(f"Optimum : {problem.optimum.y}")
@@ -165,23 +173,24 @@ def test_CatSo_var_MaxCut_instances():
             #print(f"Lower bounds: {problem.bounds.lb}")
             #print(f"Upper bounds: {problem.bounds.ub}")
             print("=" * 20)
+            """
 
 # for stats
-def test_CatSo_var_MaxCut_bench(restart_rate, mean_budget_restart, var_budget_restart):
+def test_CatSo_var_MaxCut_bench(restart_rate, mean_budget_restart, var_budget_restart, budget):
     fids = [k if "MaxCut" in v else None for k, v in ioh.ProblemClass.GRAPH.problems.items()]
     fids = [fid for fid in fids if fid is not None]
     problem = ioh.get_problem(fids[1], problem_class=ioh.ProblemClass.GRAPH)
     best_found_list = []
     print("=" * 20)
     for i in range(20):
-        CatSo_var_budget_restart(restart_rate=restart_rate, mean_budget_restart=mean_budget_restart, var_budget_restart=var_budget_restart)(problem)
+        CatSo_var_budget_restart(budget=budget, restart_rate=restart_rate, mean_budget_restart=mean_budget_restart, var_budget_restart=var_budget_restart)(problem)
         best_found_list.append(problem.state.current_best.y)
         problem.reset()
     print(f"Best found avg : {sum(best_found_list) / len(best_found_list)}")
     print("=" * 20)
 
 
-# test_CatSo_var_MaxCut_bench(25/50000, 500, 5)
+test_CatSo_var_MaxCut_bench(20/1000, 1000/10, 5, 1000)
 
 
 
@@ -370,5 +379,5 @@ def test_debug(budget):
     print(f"Have we stayed in budget ? eval = {OneMax.state.evaluations} <= {budget} ?\n Best found = {OneMax.state.current_best.y}")
 
 
-# test_debug(40)
+#test_debug(40)
     
