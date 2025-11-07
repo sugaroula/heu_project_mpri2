@@ -351,6 +351,107 @@ class CatSo_var_budget_restart:
 
 
 
+# uses your existing eval_and_record(problem, x, trace)
+
+class CatSo_pop2_bias_rate:
+
+    def __init__(self, budget: int = 50_000, mutation_rate: float = 0.1,
+                 restart_rate: float = 0.002,  mean_budget_restart: float = 500,
+                 var_budget_restart: float = 5, bias_rate: float = 0.9, **kwargs):
+        self.budget = budget
+        self.mutation_rate = mutation_rate
+        self.restart_rate = restart_rate
+        self.mean_budget_restart = mean_budget_restart
+        self.var_budget_restart = var_budget_restart
+        self.bias_rate = bias_rate
+
+    def __call__(self, problem: ioh.problem.IntegerSingleObjective) -> None:
+
+        trace = []  # <-- collect (evals, best_y) so your plotting works
+        n = problem.meta_data.n_variables
+
+
+        # set 1/n
+        self.mutation_rate = 1 / problem.meta_data.n_variables
+
+        # Initialize with random sample
+        favorite = np.random.randint(0, 2, size=problem.meta_data.n_variables)
+        backup   = np.random.randint(0, 2, size=problem.meta_data.n_variables)
+        result_fav    = eval_and_record(problem, favorite, trace)
+        result_backup = eval_and_record(problem, backup, trace)
+
+        if result_backup == problem.state.current_best.y: # backup is better than fav, we swap
+            copy = favorite
+            favorite = backup
+            backup = copy
+            result_copy = result_fav
+            result_fav = result_backup
+            result_backup = result_copy
+
+        # init candidate
+        candidate = favorite
+
+        # Main loop
+        while problem.state.evaluations < self.budget and not problem.state.optimum_found:
+
+            # Potential restart
+            if np.random.random() < self.restart_rate:
+
+                budget_restart = np.floor(
+                    np.random.normal(loc=self.mean_budget_restart, scale=self.var_budget_restart)
+                )
+
+                candidate_restart = np.random.randint(0, 2, size=problem.meta_data.n_variables)
+                result_restart = eval_and_record(problem, candidate_restart, trace)
+
+                while budget_restart > 0 and problem.state.evaluations < self.budget and not problem.state.optimum_found:
+                    budget_restart -= 1
+
+                    new_candidate_restart = candidate_restart.copy()
+                    for i in range(n):  
+                        if np.random.random() < self.mutation_rate:
+                            new_candidate_restart[i] = 1 - new_candidate_restart[i]
+
+                    new_result_restart = eval_and_record(problem, new_candidate_restart, trace)
+
+                    if new_result_restart >= result_restart:
+                        candidate_restart = new_candidate_restart
+                        result_restart = new_result_restart
+
+                # insert restart result if good
+                if result_restart >= result_backup:
+                    if result_restart >= result_fav:
+                        backup, result_backup = favorite, result_fav
+                        favorite, result_fav = candidate_restart, result_restart
+                    else:
+                        backup, result_backup = candidate_restart, result_restart
+
+            # No restart
+            else:
+                if np.random.random() < self.bias_rate:
+                    candidate = favorite.copy()
+                    for i in range(n):
+                        if np.random.random() < self.mutation_rate:
+                            candidate[i] = 1 - candidate[i]
+                    new_result = eval_and_record(problem, candidate, trace)
+                    if new_result >= result_fav:
+                        favorite, result_fav = candidate, new_result
+                else:
+                    candidate = backup.copy()
+                    for i in range(n):
+                        if np.random.random() < self.mutation_rate:
+                            candidate[i] = 1 - candidate[i]
+                    new_result = eval_and_record(problem, candidate, trace)
+                    if new_result >= result_backup:
+                        if new_result >= result_fav:
+                            backup, favorite = favorite, candidate
+                            result_backup, result_fav = result_fav, new_result
+                        else:
+                            backup, result_backup = candidate, new_result
+
+        return np.array(trace, dtype=float)  # <-- important for plotting
+
+
 
 '''class CatherinotSotiriou:
     """
@@ -894,6 +995,101 @@ def run_all_graph_instances_with_plots(budget=10_000, n_reps=3,
             break
 
 
+'''def _bias_values_from_budget(budget):
+    # 1 - (k / budget) for k in {10, 50, 100, 500, 1000}
+    divisors = [10, 50, 100, 500, 1000]
+    return [1.0 - (k / float(budget)) for k in divisors]'''
+
+
+def plot_bias_sweep_for_fid(fid, budget=10_000, n_reps=3,
+                            restart_rate=None, mean_br=None, var_br=20):
+    """
+    Sweep bias_rate for CatSo_pop2_bias_rate on a fixed GRAPH fid and plot all curves on one figure.
+    Uses your existing plot_compare_algorithms.
+    """
+    problem = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
+    pname = problem.meta_data.name
+
+    rr  = restart_rate if restart_rate is not None else (10.0 / budget)   # your default best combo
+    mbr = mean_br if mean_br is not None else int(budget / 10)            # your default best combo
+
+    bias_list = [0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
+
+    results = {}
+    for b in bias_list:
+        label = f"bias={b:.6f}"
+        traces = run_reps(
+            problem,
+            CatSo_pop2_bias_rate,
+            n_reps=n_reps,
+            budget=budget,
+            mutation_rate=None,            # 1/n inside
+            restart_rate=rr,
+            mean_budget_restart=mbr,
+            var_budget_restart=var_br,
+            bias_rate=b
+        )
+        results[label] = traces
+
+    plot_compare_algorithms(
+        pname,
+        results,
+        title_suffix=f"(fid={fid}, budget={budget}, rr={rr}, mean_br={mbr}, var_br={var_br})"
+    )
+
+
+def compare_algorithms_on_graph_instance(fid, budget=10_000, n_reps=3,
+                                         restart_rate=None, mean_br=None, var_br=20,
+                                         bias_rate=0.9, problem_name_override=None):
+    """
+    Run (1+1)EA, RLS, RandomSearch, and CatSo_pop2_bias_rate (bias=0.9 by default)
+    on a specific GRAPH problem fid, then plot mean curves together.
+
+    - restart_rate defaults to 1/budget
+    - mean_br (mean restart budget) defaults to budget/10
+    - var_br controls the Normal restart-budget std-dev (keep small, e.g., 20)
+    """
+    problem = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
+    pname = problem_name_override or problem.meta_data.name
+
+    rr = (1.0 / budget) if restart_rate is None else float(restart_rate)
+    mbr = int(budget / 10) if mean_br is None else int(mean_br)
+
+    algo_results = {}
+
+    # baselines
+    algo_results["(1+1)EA"] = run_reps(problem, OnePlusOneEA_Simple,
+                                       n_reps=n_reps, budget=budget, mutation_rate=None)
+    algo_results["RLS"] = run_reps(problem, RLS,
+                                   n_reps=n_reps, budget=budget)
+    algo_results["RandomSearch"] = run_reps(problem, RandomSearch,
+                                            n_reps=n_reps, budget=budget)
+
+    # our bias algo (exact class you use in your code)
+    algo_results["Our algo"] = run_reps(
+        problem, CatSo_pop2_bias_rate, n_reps=n_reps,
+        budget=budget,
+        mutation_rate=None,            # uses 1/n internally anyway
+        restart_rate=rr,
+        mean_budget_restart=mbr,
+        var_budget_restart=var_br,
+        bias_rate=bias_rate
+    )
+
+    title = f"{pname} — mean curves (fid={fid}, budget={budget}, var={var_br})"
+    plot_compare_algorithms(pname, algo_results, title_suffix=f"(fid={fid}, budget={budget}, var={var_br})")
+
+
+def compare_many(fids, **kw):
+    for fid in fids:
+        try:
+            name = ioh.ProblemClass.GRAPH.problems[fid]
+        except KeyError:
+            name = f"fid={fid}"
+        print(f"\n--- {name} (fid={fid}) ---")
+        compare_algorithms_on_graph_instance(fid=fid, problem_name_override=name, **kw)
+
+
 
 # optional: save a small CSV 
 import csv
@@ -972,7 +1168,7 @@ def benchmark_all_graph_items(budget=10_000, n_reps=3,
 
         res = run_n_reps(
             problem,
-            algo_cls=CatSo_only_restart,
+            algo_cls=CatSo_pop2_bias_rate,
             n_reps=n_reps,
             budget=budget,
             mutation_rate=None,          # default 1/n
@@ -996,6 +1192,8 @@ def benchmark_all_graph_items(budget=10_000, n_reps=3,
                     "successes","reps","mean_final","mean_t2s"))
         print(f"\nSaved {csv_path}")
 
+
+'''
 def benchmark_all_graph_items_grid(budget=10_000, n_reps=3, csv_path="graph_all_grid.csv", limit=None):
     rates = [10.0/budget, 1.0/budget, 1.0/(10.0*budget)]
     brests = [int(max(1, budget/1000)), int(max(1, budget/100)), int(max(1, budget/10))]
@@ -1040,7 +1238,7 @@ def benchmark_all_graph_items_grid(budget=10_000, n_reps=3, csv_path="graph_all_
             header=("problem_name","fid","budget","restart_rate","budget_restart",
                     "successes","reps","mean_final","mean_t2s"))
         print(f"\nSaved {csv_path}")
-
+'''
 
 # SANITY CHECK FOR GRAPHS
 
@@ -1123,8 +1321,8 @@ if __name__ == "__main__":
     # 3) full 3×3 grid per problem type (plots + CSV)
     #run_all_keywords_grid(budget=100, n_reps=3, instance=1, csv_path="grid_summary.csv")
 
-    # 4) run all problem instances
-    BUDGET = 1000
+    # 4) benchmark all problem instances for only_restart algorithm
+    BUDGET = 500
     RR     = 10.0 / BUDGET       # ← restart_rate (pick one of the three)
     BR     = int(BUDGET / 100)   # ← budget_restart (pick one of the three)
 
@@ -1146,5 +1344,23 @@ if __name__ == "__main__":
 
     # 6) Variance sweeps (normal-distributed restart budget) for MaxCut & MaxCoverage
     #plot_var_sweep_maxcut_and_maxcoverage(budget=10_000, n_reps=3)
-    compare_algorithms_on_maxcoverage(fid=2204, budget=10_000, n_reps=3)
+    #compare_algorithms_on_maxcoverage(fid=2204, budget=10_000, n_reps=3)
 
+    # 7) Benchmark bias algo
+    '''benchmark_all_graph_items(
+        budget=BUDGET,
+        n_reps=2,
+        restart_rate=RR,
+        budget_restart=BR,
+        csv_path="benchmark_bias_09.csv",  # or None to skip csv
+        limit=None                        # e.g. 5 while testing
+    )'''
+
+    # 8) Plot bias algo
+    #plot_bias_sweep_for_fid(fid=2308, budget=5_000, n_reps=3, var_br=20)
+
+    # 9) Compare to other algos
+    #compare_algorithms_on_graph_instance(fid=2000, budget=10_000, n_reps=3, restart_rate=0.001, mean_br=1000, var_br=20, bias_rate=0.9)
+    compare_many([2000, 2105, 2204, 2304],
+             budget=10_000, n_reps=3,
+             restart_rate=0.001, mean_br=1000, var_br=20, bias_rate=0.9)
