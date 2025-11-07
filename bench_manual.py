@@ -283,7 +283,76 @@ class CatSo_only_restart:
         return np.array(trace, dtype=float)  # <-- so run_reps/plot_* work
     
 
-class CatherinotSotiriou:
+
+class CatSo_var_budget_restart:
+    """
+    Like CatSo_only_restart, but when a restart is triggered, the sub-budget
+    is sampled from N(mean_budget_restart, var_budget_restart).
+    """
+    def __init__(self, budget: int = 50_000,
+                 mutation_rate: float | None = None,
+                 restart_rate: float = 0.002,
+                 mean_budget_restart: float = 500,
+                 var_budget_restart: float = 5,
+                 rng_seed: int | None = None,
+                 **kwargs):
+        self.budget = budget
+        self.mutation_rate = mutation_rate
+        self.restart_rate = restart_rate
+        self.mean_budget_restart = mean_budget_restart
+        self.var_budget_restart = var_budget_restart
+        self.rng = np.random.RandomState(rng_seed)
+
+    def __call__(self, problem: ioh.problem.IntegerSingleObjective):
+        trace = []
+        n = problem.meta_data.n_variables
+        p = (self.mutation_rate if self.mutation_rate is not None
+             else 1 / max(n, 1))
+
+        # start from a random point
+        candidate = self.rng.randint(0, 2, size=n)
+        _ = eval_and_record(problem, candidate, trace)
+
+        while problem.state.evaluations < self.budget and not problem.state.optimum_found:
+
+            if self.rng.rand() < self.restart_rate:
+                # draw a positive integer sub-budget
+                subB = int(max(1, np.floor(self.rng.normal(
+                    loc=self.mean_budget_restart,
+                    scale=max(1e-9, self.var_budget_restart)
+                ))))
+                # fresh random candidate and climb for subB steps
+                cand = self.rng.randint(0, 2, size=n)
+                f = eval_and_record(problem, cand, trace)
+
+                while subB > 0 and problem.state.evaluations < self.budget and not problem.state.optimum_found:
+                    subB -= 1
+                    y = cand.copy()
+                    flips = self.rng.rand(n) < p
+                    if not flips.any():
+                        flips[self.rng.randint(n)] = True
+                    y[flips] = 1 - y[flips]
+                    fy = eval_and_record(problem, y, trace)
+                    if fy >= f:
+                        cand, f = y, fy
+                # no explicit merge needed: the logger keeps best-so-far
+
+            else:
+                # normal local step from best-so-far
+                x = problem.state.current_best.x.copy()
+                y = x.copy()
+                flips = self.rng.rand(n) < p
+                if not flips.any():
+                    flips[self.rng.randint(n)] = True
+                y[flips] = 1 - y[flips]
+                _ = eval_and_record(problem, y, trace)
+
+        return np.array(trace, dtype=float)
+
+
+
+
+'''class CatherinotSotiriou:
     """
     Two-candidate biased (1+1) EA with stochastic restarts.
 
@@ -397,7 +466,7 @@ class CatherinotSotiriou:
                 f1, f2 = f2, f1
 
         return np.array(trace, dtype=float)
-
+'''
 
         
 '''
@@ -578,6 +647,62 @@ def plot_compare_algorithms(problem_name, algo_results, title_suffix=""):
     plt.grid(True); plt.legend(); plt.show()
     return mean_curves
 
+
+def compare_algorithms_on_maxcoverage(fid=2100, budget=10_000, n_reps=3):
+    """
+    Compare CatSo_var_budget_restart (var=20) with classic algorithms
+    on one fixed MaxCoverage instance. Uses your existing plot_compare_algorithms.
+    """
+    np.random.seed(42)  # to make runs deterministic
+
+    problem = ioh.get_problem(fid, problem_class=ioh.ProblemClass.GRAPH)
+    pname = problem.meta_data.name
+
+    # fixed parameters (your best combo)
+    restart_rate = 10.0 / budget     # 0.001
+    mean_restart = int(budget / 10)  # 100
+    var_restart  = 10
+
+    algos = {
+        "(1+1)EA": lambda: OnePlusOneEA_Simple(budget=budget, mutation_rate=None),
+        "RLS": lambda: RLS(budget=budget),
+        "RandomSearch": lambda: RandomSearch(budget=budget),
+        "Our algo": lambda: CatSo_var_budget_restart(
+            budget=budget,
+            mutation_rate=None,
+            restart_rate=restart_rate,
+            mean_budget_restart=mean_restart,
+            var_budget_restart=var_restart
+        ),
+    }
+
+    results = {}
+    for name, make_algo in algos.items():
+        traces = []
+        for _ in range(n_reps):
+            problem.reset()
+            algo = make_algo()
+            tr = algo(problem)
+            traces.append(tr)
+        results[name] = traces
+
+    plot_compare_algorithms(
+        pname, results,
+        title_suffix=f"(fid={fid}, budget={budget}, var={var_restart})"
+    )
+
+
+    # run all algorithms
+    results = {}
+    for name, make_algo in algos.items():
+        traces = run_reps(problem, make_algo().__class__, n_reps=n_reps, **make_algo().__dict__)
+        results[name] = traces
+
+    # plot with your existing helper
+    plot_compare_algorithms(pname, results, title_suffix=f"(fid={fid}, budget={budget})")
+
+
+
 def make_rate_grid(budget):
     return [10.0/budget, 1.0/budget, 1.0/(10.0*budget)]
 
@@ -630,6 +755,60 @@ def run_param_grid_for_keyword(keyword, instance=1, budget=10000, n_reps=3):
 
     return (keyword, fid, problem.meta_data.name), results, summary_rows
 
+
+def plot_var_sweep_for_keyword(keyword, budget=10_000, n_reps=3):
+    """One figure for `keyword` (MaxCut or MaxCoverage) with three variance curves."""
+    fixed_rr = 10.0 / budget              # 0.001 when budget=10000
+    fixed_mean = int(budget / 10)         # 100 when budget=10000
+    var_list = [fixed_mean/10, fixed_mean/20, fixed_mean/50, fixed_mean/100]  # 3 variances
+
+    # pick one fid for the keyword
+    picks = find_fids_by_keywords(keyword, limit_per_kw=1)
+    if not picks.get(keyword):
+        print(f"[skip] No fid matched '{keyword}'.")
+        return
+    fid = picks[keyword][0]
+    problem = get_graph_problem(fid, instance=1)
+
+    # run & collect mean curves
+    all_traces = {}
+    for v in var_list:
+        traces = run_reps(
+            problem, CatSo_var_budget_restart,
+            n_reps=n_reps, budget=budget,
+            mutation_rate=None,
+            restart_rate=fixed_rr,
+            mean_budget_restart=fixed_mean,
+            var_budget_restart=v
+        )
+        all_traces[f"var={v:.2f}"] = traces
+
+    # plot: unify grid and draw 3 curves
+    plt.figure(figsize=(10,6))
+    max_x = int(max(t[-1,0] for traces in all_traces.values() for t in traces if t.size))
+    grid = np.linspace(1, max_x, 200).astype(int)
+
+    for label, traces in all_traces.items():
+        interps = []
+        for t in traces:
+            xs, ys = t[:,0], t[:,1]
+            interps.append(np.interp(grid, xs, ys, left=ys[0], right=ys[-1]))
+        mean_curve = np.mean(np.vstack(interps), axis=0)
+        plt.plot(grid, mean_curve, lw=2, label=label)
+
+    title = f"{problem.meta_data.name} (fid={fid}) — restart_rate={fixed_rr}, mean_restart_budget={fixed_mean}"
+    plt.xlabel("Evaluations"); plt.ylabel("Best-so-far")
+    plt.title(title); plt.grid(True); plt.legend(); plt.show()
+
+
+def plot_var_sweep_maxcut_and_maxcoverage(budget=10_000, n_reps=3):
+    plot_var_sweep_for_keyword("MaxCut", budget=budget, n_reps=n_reps)
+    plot_var_sweep_for_keyword("MaxCoverage", budget=budget, n_reps=n_reps)
+    
+
+
+
+
 def plot_grid_per_rate(keyword, fid, prob_name, results):
     """Make 3 figures (one per restart_rate), each with 3 curves (budget_restart values)."""
     # collect unique sorted rates and brs
@@ -675,12 +854,16 @@ def run_all_keywords_grid(budget=10000, n_reps=3, instance=1, csv_path="grid_sum
 
 
 def run_all_graph_instances_with_plots(budget=10_000, n_reps=3,
-                                       filter_substrings=None,   # e.g. ["MaxCut","MaxCoverage"]
-                                       max_plots=None):          # limit how many fids to plot
+                                       filter_substrings=None,
+                                       max_plots=None):
     """
-    For every GRAPH fid (optionally filtered), run the 3×3 grid with CatSo_only_restart
-    and produce 3 figures per fid (one per restart_rate, 3 lines = budget_restart values).
+    For every GRAPH fid (optionally filtered), run CatSo_only_restart
+    with the fixed (restart_rate=10/budget, budget_restart=budget/10)
+    and plot a single mean curve per fid.
     """
+    fixed_rr = 10.0 / budget                  # 0.001 for budget=10000
+    fixed_br = int(max(1, budget / 10))       # 100   for budget=10000
+
     shown = 0
     for fid, name in sorted(ioh.ProblemClass.GRAPH.problems.items()):
         if filter_substrings:
@@ -694,26 +877,16 @@ def run_all_graph_instances_with_plots(budget=10_000, n_reps=3,
             print(f"[skip] fid={fid} {name}: {e}")
             continue
 
-        # build the same 3×3 grid you already use elsewhere
-        rates     = make_rate_grid(budget)             # [10/budget, 1/budget, 1/(10*budget)]
-        brestarts = make_restart_budget_grid(budget)   # [budget/1000, budget/100, budget/10]
-        results = {}                                   # {(rate, br): [trace,...]}
+        traces = run_reps(
+            problem, CatSo_only_restart,
+            n_reps=n_reps, budget=budget,
+            mutation_rate=None,
+            restart_rate=fixed_rr,
+            budget_restart=fixed_br
+        )
 
-        for r in rates:
-            for br in brestarts:
-                problem.reset()
-                traces = run_reps(
-                    problem, CatSo_only_restart,
-                    n_reps=n_reps, budget=budget,
-                    mutation_rate=None,         # 1/n default
-                    restart_rate=r,
-                    budget_restart=br
-                )
-                results[(r, br)] = traces
-
-        print(f"\n=== {name} (fid={fid}) — running grid, budget={budget}, reps={n_reps} ===")
-        # your existing plotter signature: (keyword, fid, prob_name, results)
-        plot_grid_per_rate("ALL", fid, name, results)
+        title = f"{name} (fid={fid}) — restart_rate={fixed_rr}, budget_restart={fixed_br}"
+        plot_mean_traces(traces, title)
 
         shown += 1
         if max_plots is not None and shown >= max_plots:
@@ -965,9 +1138,13 @@ if __name__ == "__main__":
     )'''
 
     # 5) plot all problem instances 
-    run_all_graph_instances_with_plots(
+    '''run_all_graph_instances_with_plots(
         budget=10_000, n_reps=3,
         filter_substrings=["MaxCut","MaxCoverage","MaxInfluence","PackWhile"],
         max_plots=None
-    )
+    )'''
+
+    # 6) Variance sweeps (normal-distributed restart budget) for MaxCut & MaxCoverage
+    #plot_var_sweep_maxcut_and_maxcoverage(budget=10_000, n_reps=3)
+    compare_algorithms_on_maxcoverage(fid=2204, budget=10_000, n_reps=3)
 
