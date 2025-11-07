@@ -47,19 +47,6 @@ class CatherinotSotiriou:
             result_fav = result_backup
             result_backup = result_copy
 
-        # For stats : TO REMOVE
-        
-        count_restart = 0
-        count_useful_restart = 0
-        cost_restart = 0
-        count_backup_picked = 0
-        count_backup_better = 0
-        
-
-        # For debugging purposes
-        # TO REMOVE
-        # print(f"CatSo called w budget {self.budget}, mut {self.mutation_rate}, restart rate {self.restart_rate}, budget_restart N({self.mean_budget_restart},{self.var_budget_restart})\n")
-
         # Main loop
         while problem.state.evaluations < self.budget and not problem.state.optimum_found:
             
@@ -68,16 +55,7 @@ class CatherinotSotiriou:
                 
                 # We determine the budget allocated to the restart. It follows a gaussian distribution of mean and var specified in the parameters
                 budget_restart = np.floor(np.random.normal(loc = self.mean_budget_restart, scale = self.var_budget_restart))
-
-
-                # for stats : REMOVE
                 
-                if problem.state.evaluations + budget_restart >= self.budget :
-                    cost_restart += self.budget - problem.state.evaluations
-                else :
-                    cost_restart += budget_restart
-                
-
                 # We randomly sample a candidate for restart :
                 candidate_restart = np.random.randint(0, 2, size=problem.meta_data.n_variables)
                 result_restart = problem(candidate_restart)
@@ -98,15 +76,9 @@ class CatherinotSotiriou:
                         candidate_restart = new_candidate_restart
                         result_restart = new_result_restart
                 
-                # for stats TO COMMENT : REMOVE
-                count_restart +=1
-                
 
                 # At the end of our restart, we see if it was useful :
                 if result_restart >= result_backup :
-                    # for stats TO COMMENT : REMOVE
-                    count_useful_restart += 1
-
                     if result_restart >= result_fav :
                         # the restart is even better than the favorite ! It becomes the new favorite, and the favorite becomes the backup
                         backup = favorite
@@ -136,9 +108,6 @@ class CatherinotSotiriou:
 
 
                 else : # we pick the backup
-                    # for stats TO COMMENT : REMOVE
-                    count_backup_picked += 1
-
                     candidate = backup.copy()
 
                     for i in range(len(candidate)):
@@ -149,9 +118,6 @@ class CatherinotSotiriou:
 
                     if new_result >= result_backup : # new candidate is better than current backup, we keep it
                         if new_result >= result_fav : # the backup has become better than the favorite. We swap
-                            # for stats TO COMMENT : REMOVE
-                            count_backup_better += 1
-
                             backup = favorite
                             favorite = candidate
                             result_backup = result_fav
@@ -161,25 +127,6 @@ class CatherinotSotiriou:
                             backup = candidate
                             result_backup = new_result
 
-        print(f"ratio restarts : {count_restart} / {self.budget} = {count_restart / self.budget}")
-        if count_restart > 0 :
-            print(f"ratio useful restarts : {count_useful_restart} / {count_restart} = {count_useful_restart / count_restart}")
-        print(f"cost restart {cost_restart}")
-        if self.budget - cost_restart > 0 :
-            print(f"backup picked : {count_backup_picked} / {self.budget - cost_restart} = {count_backup_picked / (self.budget - cost_restart)}")
-        else : 
-            print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!! cost_restart = budget !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n\n")
         
 
 
-def test_CatSo_pop2_bias_plot_MaxCut(bias_rate, restart_rate, mean_budget_restart, var_budget_restart, budget):
-    fids = [k if "MaxCut" in v else None for k, v in ioh.ProblemClass.GRAPH.problems.items()]
-    fids = [fid for fid in fids if fid is not None]
-    problem = ioh.get_problem(fids[1], problem_class=ioh.ProblemClass.GRAPH)
-    print("=" * 20)
-    CatherinotSotiriou()(problem)
-
-
-#test_CatSo_pop2_bias_plot_MaxCut(0.7, 0.001, 500, 20, 10000)
-budget = 50000
-test_CatSo_pop2_bias_plot_MaxCut(0.9, 10/budget, budget/10, (budget/10)/50, budget)
