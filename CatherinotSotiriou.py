@@ -11,9 +11,8 @@ import os
 
 class CatherinotSotiriou:
 
-    def __init__(self, budget: int = 10_000, mutation_rate: float = 0.1, restart_rate: float = 0.001,  mean_budget_restart: float = 100, var_budget_restart: float = 20, bias_rate: float = 0.9, best_param: bool = True):
+    def __init__(self, budget: int = 10_000, restart_rate: float = 0.001,  mean_budget_restart: float = 100, var_budget_restart: float = 20, bias_rate: float = 0.9, best_param: bool = True):
         self.budget = budget
-        self.mutation_rate = mutation_rate # probability to flip each bit
         self.restart_rate = restart_rate # probability to start a restart at each iteration
         self.mean_budget_restart = mean_budget_restart # mean for the budget allocated to a restart
         self.var_budget_restart = var_budget_restart # var for the budget allocated to a restart
@@ -23,15 +22,13 @@ class CatherinotSotiriou:
     def __call__(self, problem: ioh.problem.IntegerSingleObjective) -> None:
 
         size = problem.meta_data.n_variables
+        self.mutation_rate = 1/size  # best chance at flipping only one bit at once
 
         if self.best_param :
-            self.mutation_rate = 1/size  # best chance at flipping only one bit at once
             self.restart_rate = 10/self.budget
             self.mean_budget_restart = self.budget/100
             self.var_budget_restart = self.mean_budget_restart/5
             self.bias_rate = 0.9
-
-        print(f"{self.bias_rate}, {self.restart_rate}, {self.mean_budget_restart}, {self.var_budget_restart}, {self.budget}")
 
         # Initialize our favorite and our backup with random samples
         favorite = np.random.randint(0, 2, size=problem.meta_data.n_variables)
@@ -66,9 +63,15 @@ class CatherinotSotiriou:
                     budget_restart -= 1
                     new_candidate_restart = candidate_restart.copy()
 
+                    no_bit_flipped = True
                     for i in range(size):
                         if np.random.random() <= self.mutation_rate:
                             new_candidate_restart[i] = 1 - new_candidate_restart[i]  # Flip bit (0->1, 1->0)
+                            no_bit_flipped = False
+                    if no_bit_flipped :
+                        i = np.random.randint(0, size)
+                        new_candidate_restart[i] = 1 - new_candidate_restart[i]
+
                     
                     new_result_restart = problem(new_candidate_restart)
 
@@ -96,9 +99,14 @@ class CatherinotSotiriou:
                 if np.random.random() <= self.bias_rate: # we pick the favorite
                     candidate = favorite.copy()
 
+                    no_bit_flipped = True
                     for i in range(size):
                         if np.random.random() <= self.mutation_rate:
                             candidate[i] = 1 - candidate[i]  # Flip bit (0->1, 1->0)
+                            no_bit_flipped = False
+                    if no_bit_flipped :
+                        i = np.random.randint(0, size)
+                        candidate[i] = 1 - candidate[i]
                     
                     new_result = problem(candidate)
 
@@ -110,9 +118,14 @@ class CatherinotSotiriou:
                 else : # we pick the backup
                     candidate = backup.copy()
 
+                    no_bit_flipped = True
                     for i in range(len(candidate)):
                         if np.random.random() <= self.mutation_rate:
                             candidate[i] = 1 - candidate[i]  # Flip bit (0->1, 1->0)
+                            no_bit_flipped = False
+                    if no_bit_flipped :
+                        i = np.random.randint(0, size)
+                        candidate[i] = 1 - candidate[i]
                     
                     new_result = problem(candidate)
 
