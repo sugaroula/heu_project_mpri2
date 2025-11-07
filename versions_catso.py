@@ -191,7 +191,7 @@ def test_CatSo_var_MaxCut_bench(restart_rate, mean_budget_restart, var_budget_re
     print("=" * 20)
 
 
-test_CatSo_var_MaxCut_bench(20/1000, 1000/10, 5, 1000)
+# test_CatSo_var_MaxCut_bench(20/1000, 1000/10, 5, 1000)
 
 
 
@@ -403,8 +403,11 @@ class CatSo_pop2_bias_rate_plot:
     def __call__(self, problem: ioh.problem.IntegerSingleObjective) -> None:
         
         trace_favorite = []
-        trace_bias = []
+        picked_favorite = []
+        trace_backup = []
+        picked_backup = []
         trace_restart = []
+        picked_restart = []
 
         self.mutation_rate = 1/problem.meta_data.n_variables
 
@@ -422,7 +425,11 @@ class CatSo_pop2_bias_rate_plot:
             result_fav = result_backup
             result_backup = result_copy
 
-        trace_favorite.append((problem.state.evaluations, ))
+        trace_favorite.append(result_fav)
+        picked_favorite.append(1)
+        trace_backup.append(result_backup)
+        picked_backup.append(2)
+
         # init candidate
         candidate = favorite
 
@@ -444,7 +451,7 @@ class CatSo_pop2_bias_rate_plot:
         while problem.state.evaluations < self.budget and not problem.state.optimum_found:
             
             # Potential restart
-            if np.random.random() < self.restart_rate:
+            if np.random.random() <= self.restart_rate:
                 
                 """
                 print("-" * 10)
@@ -466,13 +473,16 @@ class CatSo_pop2_bias_rate_plot:
                 candidate_restart = np.random.randint(0, 2, size=problem.meta_data.n_variables)
                 result_restart = problem(candidate_restart)
 
+                trace_restart.append(result_restart)
+                picked_restart.append(problem.state.evaluations)
+
                 while budget_restart > 0 and problem.state.evaluations < self.budget and not problem.state.optimum_found: # We do have to stay in budget
                     
                     budget_restart -= 1
                     new_candidate_restart = candidate_restart
 
                     for i in range(len(candidate)):
-                        if np.random.random() < self.mutation_rate:
+                        if np.random.random() <= self.mutation_rate:
                             new_candidate_restart[i] = 1 - new_candidate_restart[i]  # Flip bit (0->1, 1->0)
                     
                     new_result_restart = problem(new_candidate_restart)
@@ -480,6 +490,9 @@ class CatSo_pop2_bias_rate_plot:
                     if new_result_restart >= result_restart:
                         candidate_restart = new_candidate_restart
                         result_restart = new_result_restart
+                    
+                    trace_restart.append(result_restart)
+                    picked_restart.append(problem.state.evaluations)
                 
                 # for stats TO COMMENT :
                 # count_restart +=1
@@ -500,23 +513,30 @@ class CatSo_pop2_bias_rate_plot:
                         favorite = candidate_restart
                         result_fav = result_restart
 
+                        trace_favorite.append(result_fav)
+                        picked_favorite.append(problem.state.evaluations)
+                        trace_backup.append(result_backup)
+                        picked_backup.append(problem.state.evaluations)
+
                         # print(f"restart super useful ! result favorite = {result_fav}, result backup = {result_backup}")
 
                     else :
                         # the restart is better than the backup. It replaces it
                         backup = candidate_restart
                         result_backup = result_restart
+                        trace_backup.append(result_backup)
+                        picked_backup.append(problem.state.evaluations)
 
                         # print(f"restart useful ! result backup = {result_backup}")
 
             # Restart finished
 
             else : # no restart
-                if np.random.random() < self.bias_rate: # we pick the favorite
+                if np.random.random() <= self.bias_rate: # we pick the favorite
                     candidate = favorite
 
                     for i in range(len(candidate)):
-                        if np.random.random() < self.mutation_rate:
+                        if np.random.random() <= self.mutation_rate:
                             candidate[i] = 1 - candidate[i]  # Flip bit (0->1, 1->0)
                     
                     new_result = problem(candidate)
@@ -525,6 +545,9 @@ class CatSo_pop2_bias_rate_plot:
                         favorite = candidate
                         result_fav = new_result
                     
+                    trace_favorite.append(result_fav)
+                    picked_favorite.append(problem.state.evaluations)
+
                     """
                     print("favorite picked")
                     print(f"result favorite = {result_fav}, result backup = {result_backup}")
@@ -537,7 +560,7 @@ class CatSo_pop2_bias_rate_plot:
                     candidate = backup
 
                     for i in range(len(candidate)):
-                        if np.random.random() < self.mutation_rate:
+                        if np.random.random() <= self.mutation_rate:
                             candidate[i] = 1 - candidate[i]  # Flip bit (0->1, 1->0)
                     
                     new_result = problem(candidate)
@@ -551,15 +574,41 @@ class CatSo_pop2_bias_rate_plot:
                             favorite = candidate
                             result_backup = result_fav
                             result_fav = new_result
+
+                            trace_backup.append(result_backup)
+                            picked_backup.append(problem.state.evaluations)
+                            trace_favorite.append(result_fav)
+                            picked_favorite.append(problem.state.evaluations)
                         else : # we get a better a backup
                             backup = candidate
                             result_backup = new_result
+                            trace_backup.append(result_backup)
+                            picked_backup.append(problem.state.evaluations)
 
                     """
                     print("backup picked !!!!!")
                     print(f"result favorite = {result_fav}, result backup = {result_backup}")
                     """
-                    
+        """
+        array_favorite = np.array(trace_favorite, dtype=float)
+        array_backup = np.array(trace_backup, dtype=float)
+        array_restart = np.array(trace_restart, dtype=float)
+        """
+        plt.figure(figsize=(10,6))
+        plt.plot(picked_favorite, trace_favorite, marker="o", label="favorite") # , linestyle="")
+        plt.plot(picked_backup, trace_backup, marker="s", label="backup") #, linestyle="")
+        plt.plot(picked_restart, trace_restart, marker="^", label="restart") #, linestyle=None)
+        """
+        grid = np.linspace(1, problem.state.current_best.y, 200).astype(int)
+        plt.plot(grid, array_favorite, marker="o", label="favorite")
+        plt.plot(grid, array_backup, marker="+", label="backup")
+        plt.plot(grid, array_restart, marker="o", label="favorite")
+        """
+
+        plt.xlabel("Evaluations"); plt.ylabel("Best-so-far")
+        plt.title(f"Execution of CatSo on MaxCut with one backup, bias = {self.bias_rate}, (restart : rate {self.restart_rate}, budget {self.mean_budget_restart} ; {self.var_budget_restart})")
+        plt.grid(True); plt.legend(); plt.show()
+
         """
         print(f"ratio restarts : {count_restart} / {self.budget} = {count_restart / self.budget}")
         if count_restart > 0 :
@@ -570,3 +619,17 @@ class CatSo_pop2_bias_rate_plot:
         else : 
             print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!! cost_restart = budget !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n\n")
         """
+
+
+def test_CatSo_pop2_bias_plot_MaxCut(bias_rate, restart_rate, mean_budget_restart, var_budget_restart, budget):
+    fids = [k if "MaxCut" in v else None for k, v in ioh.ProblemClass.GRAPH.problems.items()]
+    fids = [fid for fid in fids if fid is not None]
+    problem = ioh.get_problem(fids[1], problem_class=ioh.ProblemClass.GRAPH)
+    print("=" * 20)
+    print(f"{bias_rate}, {restart_rate}, {mean_budget_restart}, {var_budget_restart}, {budget}")
+    CatSo_pop2_bias_rate_plot(budget=budget, restart_rate=restart_rate, mean_budget_restart=mean_budget_restart, var_budget_restart=var_budget_restart, bias_rate=bias_rate)(problem)
+
+
+test_CatSo_pop2_bias_plot_MaxCut(0.7, 0.001, 100, 5, 10000)
+
+
