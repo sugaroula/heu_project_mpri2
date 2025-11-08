@@ -26,7 +26,7 @@ class CatherinotSotiriou:
 
         if self.best_param :
             self.restart_rate = 10/self.budget
-            self.mean_budget_restart = self.budget/100
+            self.mean_budget_restart = self.budget/10
             self.var_budget_restart = self.mean_budget_restart/5
             self.bias_rate = 0.9
 
